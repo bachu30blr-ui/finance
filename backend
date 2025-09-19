@@ -1,0 +1,235 @@
+# filename: backend_fin.py
+
+import psycopg2
+import yfinance as yf
+from datetime import date
+
+# Database connection details
+DB_NAME = "finance t"
+DB_USER = "postgres"
+DB_PASS = "Tejaswi@2004"
+DB_HOST = "localhost"
+DB_PORT = "5432"
+
+def get_db_connection():
+    """Establishes a connection to the PostgreSQL database."""
+    try:
+        conn = psycopg2.connect(
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASS,
+            host=DB_HOST,
+            port=DB_PORT
+        )
+        return conn
+    except psycopg2.OperationalError as e:
+        print(f"Database connection error: {e}")
+        return None
+
+def fetch_market_data(ticker):
+    """Fetches real-time price and asset class using yfinance."""
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        current_price = info.get('currentPrice')
+        asset_class = info.get('quoteType', {}).get('longName') or 'Unknown'
+        return current_price, asset_class
+    except Exception as e:
+        print(f"Error fetching data for {ticker}: {e}")
+        return None, None
+
+# ----------------- CRUD Operations: CREATE -----------------
+
+def create_user(username, email, password):
+    """Creates a new user profile."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO users (username, email, password) VALUES (%s, %s, %s) RETURNING user_id;", (username, email, password))
+            user_id = cur.fetchone()[0]
+            conn.commit()
+            return user_id
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        return "Username or email already exists."
+    finally:
+        conn.close()
+
+def create_account(user_id, account_name, account_type):
+    """Creates a new financial account for a user."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO accounts (user_id, account_name, account_type) VALUES (%s, %s, %s);", (user_id, account_name, account_type))
+            conn.commit()
+            return True
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        return "Account with this name already exists for the user."
+    finally:
+        conn.close()
+
+def create_asset(user_id, ticker, purchase_date, shares, cost_basis, account_id):
+    """Adds a new asset to a user's portfolio."""
+    current_price, asset_class = fetch_market_data(ticker)
+    if current_price is None: return "Failed to fetch market data."
+    
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO assets (user_id, ticker_symbol, asset_class, purchase_date, shares, cost_basis, account_id) VALUES (%s, %s, %s, %s, %s, %s, %s);",
+                        (user_id, ticker, asset_class, purchase_date, shares, cost_basis, account_id))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+def create_transaction(user_id, ticker, transaction_type, transaction_date, shares, price, amount, account_id):
+    """Logs a new transaction (buy, sell, or dividend)."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO transactions (user_id, ticker_symbol, transaction_type, transaction_date, shares, price, amount, account_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);",
+                        (user_id, ticker, transaction_type, transaction_date, shares, price, amount, account_id))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+# ----------------- CRUD Operations: READ -----------------
+
+def get_user_by_username(username):
+    """Retrieves a user by their username."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE username = %s;", (username,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+def get_accounts_by_user(user_id):
+    """Retrieves all accounts for a specific user."""
+    conn = get_db_connection()
+    if conn is None: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM accounts WHERE user_id = %s;", (user_id,))
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+def get_assets_by_user(user_id):
+    """Retrieves all assets for a specific user."""
+    conn = get_db_connection()
+    if conn is None: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM assets WHERE user_id = %s;", (user_id,))
+            assets = cur.fetchall()
+            # Fetch real-time data for each asset
+            updated_assets = []
+            for asset in assets:
+                asset_id, user_id, ticker, asset_class, purchase_date, shares, cost_basis, account_id = asset
+                current_price, _ = fetch_market_data(ticker)
+                current_value = current_price * shares if current_price else 0
+                gain_loss = current_value - cost_basis if current_value else "N/A"
+                updated_assets.append((asset_id, ticker, asset_class, purchase_date, shares, cost_basis, current_value, gain_loss))
+            return updated_assets
+    finally:
+        conn.close()
+
+def get_transactions_by_user(user_id):
+    """Retrieves all transactions for a specific user."""
+    conn = get_db_connection()
+    if conn is None: return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM transactions WHERE user_id = %s ORDER BY transaction_date DESC;", (user_id,))
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+# ----------------- CRUD Operations: UPDATE -----------------
+
+def update_asset(asset_id, shares, cost_basis):
+    """Updates shares and cost basis for an existing asset."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE assets SET shares = %s, cost_basis = %s WHERE asset_id = %s;", (shares, cost_basis, asset_id))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+# ----------------- CRUD Operations: DELETE -----------------
+
+def delete_asset(asset_id):
+    """Deletes an asset from the portfolio."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM assets WHERE asset_id = %s;", (asset_id,))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+def delete_transaction(transaction_id):
+    """Deletes a transaction record."""
+    conn = get_db_connection()
+    if conn is None: return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM transactions WHERE transaction_id = %s;", (transaction_id,))
+            conn.commit()
+            return True
+    finally:
+        conn.close()
+
+# ----------------- Business Insights -----------------
+
+def get_portfolio_insights(user_id):
+    """Provides business insights for a user's portfolio."""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        with conn.cursor() as cur:
+            # Total number of assets
+            cur.execute("SELECT COUNT(asset_id) FROM assets WHERE user_id = %s;", (user_id,))
+            total_assets = cur.fetchone()[0] or 0
+
+            # Sum of shares, avg cost basis
+            cur.execute("SELECT SUM(shares), AVG(cost_basis) FROM assets WHERE user_id = %s;", (user_id,))
+            sum_shares, avg_cost = cur.fetchone()
+            sum_shares = sum_shares or 0
+            avg_cost = avg_cost or 0.0
+
+            # Max and Min cost basis
+            cur.execute("SELECT MAX(cost_basis), MIN(cost_basis) FROM assets WHERE user_id = %s;", (user_id,))
+            max_cost, min_cost = cur.fetchone()
+            max_cost = max_cost or 0.0
+            min_cost = min_cost or 0.0
+            
+            # Count transactions by type
+            cur.execute("SELECT transaction_type, COUNT(*) FROM transactions WHERE user_id = %s GROUP BY transaction_type;", (user_id,))
+            transaction_counts = {row[0]: row[1] for row in cur.fetchall()}
+
+            return {
+                "total_assets": total_assets,
+                "total_shares": sum_shares,
+                "avg_cost_basis": avg_cost,
+                "max_cost_basis": max_cost,
+                "min_cost_basis": min_cost,
+                "transaction_counts": transaction_counts
+            }
+    finally:
+        conn.close()
