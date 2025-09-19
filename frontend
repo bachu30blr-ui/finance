@@ -1,0 +1,216 @@
+# filename: frontend_fin.py
+
+import streamlit as st
+import backend as db
+import pandas as pd
+from datetime import datetime
+
+# --- Session State Management ---
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user' not in st.session_state:
+    st.session_state.user = None
+
+def login_page():
+    """Handles user login and sign-up."""
+    st.title("💰 Finance Portfolio Tracker")
+    st.subheader("Login / Sign Up")
+
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        user = db.get_user_by_username(username)
+        if user and user[3] == password:  # Note: Hashing passwords is recommended for production
+            st.session_state.logged_in = True
+            st.session_state.user = user
+            st.success(f"Welcome back, {user[1]}!")
+            st.rerun()
+
+        else:
+            st.error("Invalid username or password.")
+
+    with st.expander("Create New Account"):
+        new_username = st.text_input("New Username")
+        new_email = st.text_input("New Email")
+        new_password = st.text_input("New Password", type="password")
+        if st.button("Sign Up"):
+            result = db.create_user(new_username, new_email, new_password)
+            if isinstance(result, int):
+                st.success(f"Account created successfully for {new_username}! You can now log in.")
+            else:
+                st.error(f"Error creating account: {result}")
+
+def main_dashboard():
+    """The main application dashboard for logged-in users."""
+    st.sidebar.title(f"Hello, {st.session_state.user[1]} 👋")
+    st.sidebar.button("Logout", on_click=lambda: st.session_state.clear() or st.experimental_rerun())
+
+    st.title("📊 My Financial Portfolio")
+    
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Portfolio Summary", "Add Asset", "Log Transaction", "Analytics", "Update/Delete"])
+
+    with tab1:
+        st.header("Portfolio Overview")
+        assets = db.get_assets_by_user(st.session_state.user[0])
+        if assets:
+            df_assets = pd.DataFrame(assets, columns=["Asset ID", "Ticker", "Asset Class", "Purchase Date", "Shares", "Cost Basis", "Current Value", "Gain/Loss"])
+            df_assets['Gain/Loss'] = pd.to_numeric(df_assets['Gain/Loss'], errors='coerce')
+            
+            total_value = df_assets['Current Value'].sum()
+            total_gain_loss = df_assets['Gain/Loss'].sum()
+
+            st.metric("Total Portfolio Value", f"${total_value:,.2f}")
+            st.metric("Total Gain/Loss", f"${total_gain_loss:,.2f}", delta=f"{total_gain_loss:,.2f}")
+
+            st.subheader("Individual Holdings")
+            st.dataframe(df_assets[['Ticker', 'Asset Class', 'Shares', 'Cost Basis', 'Current Value', 'Gain/Loss']], use_container_width=True)
+
+            # Portfolio Breakdown by Asset Class
+            st.subheader("Portfolio Breakdown by Asset Class")
+            breakdown = df_assets.groupby('Asset Class')['Current Value'].sum().reset_index()
+            st.bar_chart(breakdown, x='Asset Class', y='Current Value')
+
+        else:
+            st.info("You haven't added any assets yet. Go to the 'Add Asset' tab to get started!")
+
+    with tab2:
+        st.header("Add New Asset")
+        # CREATE Asset
+        with st.form("add_asset_form"):
+            ticker = st.text_input("Ticker Symbol (e.g., AAPL, GOOGL)").upper()
+            purchase_date = st.date_input("Purchase Date", value=date.today())
+            shares = st.number_input("Number of Shares", min_value=0.01)
+            cost_basis = st.number_input("Cost Basis (Total)", min_value=0.01, format="%.2f")
+            
+            accounts = db.get_accounts_by_user(st.session_state.user[0])
+            account_options = {acc[1]: acc[0] for acc in accounts}
+            selected_account_name = st.selectbox("Select Account", list(account_options.keys()))
+            
+            submitted = st.form_submit_button("Add Asset")
+            if submitted:
+                if selected_account_name:
+                    account_id = account_options[selected_account_name]
+                    result = db.create_asset(st.session_state.user[0], ticker, purchase_date, shares, cost_basis, account_id)
+                    if result is True:
+                        st.success("Asset added successfully!")
+                        st.experimental_rerun()
+                    else:
+                        st.error(f"Failed to add asset: {result}")
+                else:
+                    st.error("Please create an account first.")
+
+    with tab3:
+        st.header("Log a New Transaction")
+        # CREATE Transaction
+        with st.form("add_transaction_form"):
+            ticker_trans = st.text_input("Ticker Symbol", key="trans_ticker").upper()
+            transaction_type = st.selectbox("Transaction Type", ["Buy", "Sell", "Dividend"])
+            transaction_date = st.date_input("Transaction Date", value=date.today())
+            
+            shares_trans = st.number_input("Shares", min_value=0.0, step=0.01)
+            price_trans = st.number_input("Price per Share", min_value=0.0, format="%.2f")
+            
+            amount_trans = shares_trans * price_trans
+            st.info(f"Calculated Total Amount: ${amount_trans:,.2f}")
+            
+            accounts_trans = db.get_accounts_by_user(st.session_state.user[0])
+            account_options_trans = {acc[1]: acc[0] for acc in accounts_trans}
+            selected_account_name_trans = st.selectbox("Select Account", list(account_options_trans.keys()), key="trans_account")
+            
+            submitted_trans = st.form_submit_button("Log Transaction")
+            if submitted_trans:
+                if selected_account_name_trans:
+                    account_id_trans = account_options_trans[selected_account_name_trans]
+                    if db.create_transaction(st.session_state.user[0], ticker_trans, transaction_type, transaction_date, shares_trans, price_trans, amount_trans, account_id_trans):
+                        st.success("Transaction logged successfully!")
+                        st.experimental_rerun()
+                    else:
+                        st.error("Failed to log transaction.")
+                else:
+                    st.error("Please create an account first.")
+
+    with tab4:
+        st.header("Business Insights")
+        insights = db.get_portfolio_insights(st.session_state.user[0])
+        if insights:
+            st.metric(label="Total Unique Assets 📈", value=insights["total_assets"])
+            st.metric(label="Total Shares Held 📜", value=insights["total_shares"])
+            st.metric(label="Average Cost Basis 💰", value=f"${insights['avg_cost_basis']:.2f}")
+            st.metric(label="Highest Cost Basis 💎", value=f"${insights['max_cost_basis']:.2f}")
+            st.metric(label="Lowest Cost Basis 🪙", value=f"${insights['min_cost_basis']:.2f}")
+            
+            st.subheader("Transaction Summary")
+            st.write(insights["transaction_counts"])
+        else:
+            st.info("No data available for insights. Add some assets and transactions!")
+
+    with tab5:
+        st.header("Update / Delete Assets")
+        
+        assets_for_edit = db.get_assets_by_user(st.session_state.user[0])
+        if assets_for_edit:
+            asset_options = {f"{a[1]} - {a[4]} shares": a[0] for a in assets_for_edit}
+            selected_asset_display = st.selectbox("Select Asset to Edit", list(asset_options.keys()))
+
+            if selected_asset_display:
+                selected_asset_id = asset_options[selected_asset_display]
+                selected_asset = next((a for a in assets_for_edit if a[0] == selected_asset_id), None)
+                
+                if selected_asset:
+                    st.subheader(f"Update Details for {selected_asset[1]}")
+                    with st.form("update_asset_form"):
+                        new_shares = st.number_input("New Shares", min_value=0.01, value=float(selected_asset[4]))
+                        new_cost_basis = st.number_input("New Cost Basis", min_value=0.01, value=float(selected_asset[5]), format="%.2f")
+                        submitted_update = st.form_submit_button("Update Asset")
+                        if submitted_update:
+                            if db.update_asset(selected_asset_id, new_shares, new_cost_basis):
+                                st.success("Asset updated successfully!")
+                                st.experimental_rerun()
+                            else:
+                                st.error("Failed to update asset.")
+
+                    st.subheader("Delete Asset")
+                    if st.button(f"Delete {selected_asset[1]}", help="This action is irreversible."):
+                        if db.delete_asset(selected_asset_id):
+                            st.success("Asset deleted successfully!")
+                            st.experimental_rerun()
+                        else:
+                            st.error("Failed to delete asset.")
+
+        else:
+            st.info("No assets to update or delete.")
+            
+        st.subheader("Add / Delete Financial Accounts")
+        st.info("To link multiple financial accounts, you can add them here.")
+        with st.form("add_account_form"):
+            account_name = st.text_input("Account Name (e.g., Fidelity, Vanguard)")
+            account_type = st.selectbox("Account Type", ["Brokerage", "Retirement", "Crypto", "Other"])
+            submitted_account = st.form_submit_button("Add Account")
+            if submitted_account:
+                if db.create_account(st.session_state.user[0], account_name, account_type):
+                    st.success("Account added successfully!")
+                    st.experimental_rerun()
+                else:
+                    st.error("Failed to add account.")
+        
+        st.subheader("View & Delete Transactions")
+        transactions = db.get_transactions_by_user(st.session_state.user[0])
+        if transactions:
+            df_transactions = pd.DataFrame(transactions, columns=["ID", "User ID", "Ticker", "Type", "Date", "Shares", "Price", "Amount", "Account ID"])
+            st.dataframe(df_transactions[['ID', 'Ticker', 'Type', 'Date', 'Shares', 'Price', 'Amount']], use_container_width=True)
+            
+            trans_id_to_delete = st.number_input("Enter Transaction ID to Delete", min_value=1, step=1)
+            if st.button("Delete Transaction"):
+                if db.delete_transaction(trans_id_to_delete):
+                    st.success("Transaction deleted successfully!")
+                    st.experimental_rerun()
+                else:
+                    st.error("Failed to delete transaction. Please check the ID.")
+        else:
+            st.info("No transactions logged yet.")
+
+if st.session_state.logged_in:
+    main_dashboard()
+else:
+    login_page()
